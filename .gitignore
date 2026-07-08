@@ -1,0 +1,28 @@
+# Secrets
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Data (bronze/silver/gold : non versionné, sauf .gitkeep)
+data/bronze/*
+!data/bronze/.gitkeep
+data/silver/*
+!data/silver/.gitkeep
+data/gold/*
+!data/gold/.gitkeep
+
+# Modèles versionnés volumineux (garder .gitkeep)
+ml/models/*
+!ml/models/.gitkeep
+
+# Streamlit / IDE / OS
+.streamlit/
+.DS_Store
+.idea/
+.vscode/
+.claude/

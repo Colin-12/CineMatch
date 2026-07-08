@@ -1,0 +1,32 @@
+# API
+fastapi
+uvicorn[standard]
+pydantic
+
+# Pipeline / orchestration
+prefect
+pandas
+
+# ML
+scikit-learn
+lightgbm
+joblib
+
+# NLP
+transformers
+torch
+
+# LLM
+anthropic
+
+# Dashboard
+streamlit
+
+# HTTP / utils
+requests
+python-dotenv
+
+# Tests / qualité
+pytest
+flake8
+black
