@@ -6,12 +6,12 @@ Plateforme de recommandation et d'analyse de films : pipeline data (Bronze/Silve
 
 ```
 CineMatch/
-├── data/            # datalake bronze/silver (non versionné, cf. .gitignore) ; gold = Supabase Postgres
+├── data/            # datalake bronze/silver/gold (non versionné, cf. .gitignore)
 ├── pipeline/         # flows Prefect (ingestion, transformation)
 ├── api/              # FastAPI (routers: fiche, comparaison, recommandation, prediction, sentiment)
 ├── ml/                # entraînement + modèles versionnés (prédiction de note)
 ├── nlp/               # entraînement + modèles versionnés (sentiment)
-├── llm/               # prompts versionnés (Anthropic Claude)
+├── llm/               # prompts versionnés (Google Gemini)
 ├── dashboard/         # Streamlit
 ├── tests/             # tests unitaires/intégration
 ├── docs/milestones/   # documents de milestones
@@ -52,10 +52,15 @@ python pipeline/transform_silver.py   # nettoyage/typage/dédoublonnage -> data/
 python pipeline/transform_gold.py     # charge film/utilisateur/notation/avis dans Supabase
 ```
 
+Gold est chargé dans Supabase (source de vérité, partagée par l'équipe) **et**
+exporté en snapshot Parquet dans `data/gold/*.parquet` (film, utilisateur,
+notation, avis) — pratique pour Personne B afin d'itérer sur l'entraînement
+ML en local sans requêter Supabase à chaque run.
+
 Idempotent : chaque étape peut être rejouée sans créer de doublons (Bronze
 saute le téléchargement/les appels déjà en cache, Gold fait un `TRUNCATE` +
-rechargement complet). Pipeline complet testé à ~1 min pour l'ensemble
-Bronze→Gold (seuil Milestone 3 : < 10 min).
+rechargement complet côté Supabase, et écrase le Parquet local). Pipeline
+complet testé à ~1 min pour l'ensemble Bronze→Gold (seuil Milestone 3 : < 10 min).
 
 Sans `TMDB_API_KEY`, l'ingestion TMDB (enrichissement des films + avis) est
 ignorée proprement (warning, pas d'erreur) — seul MovieLens est chargé.
