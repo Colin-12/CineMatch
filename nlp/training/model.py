@@ -6,13 +6,16 @@ DistilBERT via Hugging Face Trainer), sauvegarde/chargement versionnes.
 
 Seuils cibles (voir CLAUDE.md) : F1 (macro) > 0.70 et accuracy > 0.72.
 
-Rappel important (voir docstring de ``nlp/training/features.py``) : le label
-de sentiment est derive de la note MovieLens jointe sur (user_id, film_id),
-qui n'est PAS necessairement la note donnee par l'auteur reel de l'avis TMDB
-(rattachement synthetique documente dans
-``pipeline/transform_silver.py::clean_avis``). Il s'agit donc d'une
-supervision faible, potentiellement bruitee : ce point est ausculte plus loin
-via l'analyse des exemples mal classes.
+Label de sentiment (voir docstring de ``nlp/training/features.py`` pour
+l'historique complet) : derive de ``avis.note_auteur`` (0-10, la vraie note
+laissee par l'auteur de l'avis TMDB, `author_details.rating`, ~94.6% de
+couverture) ; les avis sans ``note_auteur`` sont exclus. Une ANCIENNE approche
+(abandonnee), qui derivait le label de la note MovieLens de l'utilisateur
+synthetiquement rattache a l'avis (rattachement documente dans
+``pipeline/transform_silver.py::clean_avis``), est conservee dans
+``features.derive_label_from_note_movielens_legacy`` /
+``features.add_sentiment_labels_movielens_legacy`` a titre de comparaison
+historique documentee dans le notebook, mais n'est plus utilisee ici.
 
 Usage :
     python -m nlp.training.model
@@ -41,7 +44,7 @@ from nlp.training import features
 load_dotenv()
 
 MODELS_DIR = Path(__file__).resolve().parent.parent / "models"
-MODEL_VERSION = "1.0"
+MODEL_VERSION = "1.1"  # v1.1 : label derive de note_auteur (remplace la note MovieLens)
 F1_MACRO_THRESHOLD = 0.70
 ACCURACY_THRESHOLD = 0.72
 
@@ -60,14 +63,23 @@ def print_section(title: str) -> None:
 
 
 def load_gold_avis_data() -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Charge les tables Gold `avis` et `notation` depuis Supabase Postgres."""
+    """Charge les tables Gold `avis` (avec `note_auteur`) et `notation`.
+
+    `notation` n'est plus necessaire pour deriver le label (voir
+    `build_labeled_dataset`) ; elle reste chargee et retournee pour permettre
+    la comparaison historique documentee dans le notebook avec l'ancienne
+    approche (`features.add_sentiment_labels_movielens_legacy`).
+    """
     conn = psycopg2.connect(os.environ["DATABASE_URL"])
     try:
         with conn.cursor() as cur:
-            cur.execute("SELECT user_id, film_id, texte, timestamp FROM avis")
+            cur.execute(
+                "SELECT user_id, film_id, texte, timestamp, note_auteur FROM avis"
+            )
             avis_rows = cur.fetchall()
             avis_df = pd.DataFrame(
-                avis_rows, columns=["user_id", "film_id", "texte", "timestamp"]
+                avis_rows,
+                columns=["user_id", "film_id", "texte", "timestamp", "note_auteur"],
             )
 
             cur.execute("SELECT user_id, film_id, note FROM notation")
@@ -80,11 +92,25 @@ def load_gold_avis_data() -> tuple[pd.DataFrame, pd.DataFrame]:
     return avis_df, notation_df
 
 
-def build_labeled_dataset(
+def build_labeled_dataset(avis_df: pd.DataFrame) -> pd.DataFrame:
+    """Derivation du label (depuis `note_auteur`) + longueur du texte.
+
+    Approche retenue : voir `features.add_sentiment_labels`. Exclut les avis
+    sans `note_auteur` (pas de fallback sur l'ancien label bruite).
+    """
+    labeled = features.add_sentiment_labels(avis_df)
+    labeled = features.compute_text_length(labeled)
+    return labeled
+
+
+def build_labeled_dataset_legacy_movielens(
     avis_df: pd.DataFrame, notation_df: pd.DataFrame
 ) -> pd.DataFrame:
-    """Jointure + derivation du label + longueur du texte (pipeline complet)."""
-    labeled = features.add_sentiment_labels(avis_df, notation_df)
+    """ANCIENNE approche (abandonnee) : label derive de la note MovieLens de
+    l'utilisateur synthetiquement rattache. Conservee pour comparaison
+    historique documentee dans le notebook -- voir `build_labeled_dataset`
+    pour l'approche retenue en production."""
+    labeled = features.add_sentiment_labels_movielens_legacy(avis_df, notation_df)
     labeled = features.compute_text_length(labeled)
     return labeled
 
@@ -460,11 +486,35 @@ def predict_sentiment(bundle: SentimentModelBundle, texte: str) -> tuple[str, fl
 # ---------------------------------------------------------------------------
 
 
-def main() -> None:
+def save_tfidf_reference_model(
+    tfidf_model: Pipeline, tfidf_metrics: dict[str, float]
+) -> Path:
+    """Sauvegarde TF-IDF+LogReg comme modele de reference pour `/sentiment`.
+
+    Utilise le temps que le fine-tuning DistilBERT complet (~60-90+ min CPU)
+    tourne : `api/routers/sentiment.py` charge ce bundle en attendant, puis
+    bascule sur le bundle `distilbert` une fois celui-ci disponible et
+    verifie superieur (voir model card `tfidf_logreg_sentiment_v*`).
+    """
+    bundle = SentimentModelBundle(
+        model_type="tfidf_logreg",
+        sklearn_model=tfidf_model,
+        metrics=tfidf_metrics,
+        trained_at=date.today().isoformat(),
+    )
+    return save_model(bundle)
+
+
+def main(tfidf_only: bool = False) -> None:
     print_section("CHARGEMENT DES DONNEES GOLD (avis + notation)")
-    avis_df, notation_df = load_gold_avis_data()
-    labeled_df = build_labeled_dataset(avis_df, notation_df)
-    print(f"Avis labelises : {len(labeled_df)}")
+    avis_df, _notation_df = load_gold_avis_data()
+    n_avant_filtre = len(avis_df)
+    labeled_df = build_labeled_dataset(avis_df)
+    n_exclus = n_avant_filtre - len(labeled_df)
+    print(
+        f"Avis labelises (note_auteur) : {len(labeled_df)} "
+        f"({n_exclus} exclus sur {n_avant_filtre}, sans note_auteur)"
+    )
     print(features.label_distribution(labeled_df))
 
     train_df, test_df = features.stratified_label_train_test_split(
@@ -479,6 +529,17 @@ def main() -> None:
     print_section("BASELINE CLASSIQUE (TF-IDF + regression logistique)")
     tfidf_model, tfidf_metrics, _ = train_tfidf_logreg(train_df, test_df)
     print(tfidf_metrics)
+
+    if tfidf_only:
+        print_section("SAUVEGARDE DU MODELE DE REFERENCE (TF-IDF+LogReg)")
+        saved_path = save_tfidf_reference_model(tfidf_model, tfidf_metrics)
+        print(f"Modele de reference sauvegarde : {saved_path}")
+        print(
+            "Fine-tuning DistilBERT non lance (--tfidf-only) : "
+            "executez `python -m nlp.training.model` (sans l'option) pour "
+            "le modele final."
+        )
+        return
 
     run_smoke_test(train_df, test_df)
 
@@ -518,4 +579,18 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    import argparse
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument(
+        "--tfidf-only",
+        action="store_true",
+        help=(
+            "N'entraine/sauvegarde que la baseline TF-IDF+LogReg (quelques "
+            "secondes), sans lancer le fine-tuning DistilBERT complet. Utile "
+            "pour publier un modele de reference pendant qu'un entrainement "
+            "DistilBERT tourne deja en parallele."
+        ),
+    )
+    args = parser.parse_args()
+    main(tfidf_only=args.tfidf_only)

@@ -6,17 +6,28 @@ d'I/O, pas d'effet de bord, pas d'appel reseau ni de connexion base de
 donnees). Le chargement des donnees Gold (avis + notation) est isole dans
 ``nlp/training/model.py``.
 
-Contexte metier important (a documenter aussi dans le model card) : la table
-``avis`` contient de vrais textes d'avis TMDB, mais leur rattachement a un
-``user_id`` MovieLens est **synthetique** (tirage aleatoire parmi les
-utilisateurs ayant reellement note le film, pour respecter les contraintes de
-cle etrangere -- voir ``pipeline/transform_silver.py::clean_avis``). Le label
-de sentiment utilise ici pour l'entrainement est donc derive de la note
-laissee par cet utilisateur MovieLens sur le film, et NON de la note que
-l'auteur reel de l'avis TMDB aurait pu donner. Il s'agit donc d'un label par
-supervision faible (distant supervision), structurellement bruite : un
-desaccord entre le label derive de la note et le sentiment reel du texte
-n'est pas seulement possible, il est attendu pour une fraction des exemples.
+Historique du choix de label (important, a garder trace honnetement) :
+la toute premiere version de ce module derivait le label de sentiment de la
+note MovieLens laissee par l'utilisateur auquel l'avis TMDB avait ete
+rattache *synthetiquement* (tirage aleatoire parmi les votants reels du film,
+pour respecter les contraintes de cle etrangere -- voir
+``pipeline/transform_silver.py::clean_avis``). Ce label etait donc une
+approximation par supervision faible (distant supervision) : la note utilisee
+n'etait pas celle de l'auteur reel de l'avis. Cette approche a ete
+**abandonnee** une fois la colonne Gold ``avis.note_auteur`` disponible
+(``author_details.rating`` de l'API TMDB, capture par
+``pipeline/transform_silver.py::clean_avis``, ~94.6% de couverture) : elle est
+conservee ci-dessous sous les noms ``derive_label_from_note_movielens_legacy``
+/ ``add_sentiment_labels_movielens_legacy`` uniquement a titre de trace
+historique et de comparaison documentee dans le notebook, **pas** utilisee
+pour l'entrainement du modele de production.
+
+Approche retenue (actuelle) : le label est derive directement de
+``note_auteur`` (0-10, la vraie note laissee par l'auteur de l'avis TMDB).
+Les avis sans ``note_auteur`` (TMDB ne l'a pas fournie, ~5.4% des cas) sont
+**exclus** du jeu d'entrainement/evaluation plutot que de retomber sur
+l'ancien label bruite -- on prefere un jeu de donnees plus petit mais a la
+supervision fiable qu'un jeu plus grand mais bruite.
 """
 
 from __future__ import annotations
@@ -34,8 +45,18 @@ LABEL2ID: dict[str, int] = {label: idx for idx, label in enumerate(LABELS)}
 ID2LABEL: dict[int, str] = {idx: label for label, idx in LABEL2ID.items()}
 
 
-def derive_label_from_note(note: float) -> str:
-    """Deriv un label de sentiment a partir d'une note MovieLens (1-5)."""
+# ---------------------------------------------------------------------------
+# Ancienne approche (ABANDONNEE) : label derive de la note MovieLens de
+# l'utilisateur synthetiquement rattache. Conservee uniquement pour trace
+# historique / comparaison documentee dans le notebook.
+# ---------------------------------------------------------------------------
+
+
+def derive_label_from_note_movielens_legacy(note: float) -> str:
+    """ANCIEN label (abandonne) : derive d'une note MovieLens (1-5) qui n'est
+    pas celle de l'auteur reel de l'avis (rattachement synthetique). Conserve
+    a titre de comparaison historique -- voir ``derive_label_from_note_auteur``
+    pour l'approche retenue."""
     if note <= 2:
         return LABEL_NEGATIF
     if note >= 4:
@@ -43,10 +64,13 @@ def derive_label_from_note(note: float) -> str:
     return LABEL_NEUTRE
 
 
-def add_sentiment_labels(
+def add_sentiment_labels_movielens_legacy(
     avis_df: pd.DataFrame, notation_df: pd.DataFrame
 ) -> pd.DataFrame:
-    """Jointure avis x notation (user_id, film_id) puis derive la colonne label.
+    """ANCIENNE approche (abandonnee) : jointure avis x notation puis derive
+    le label depuis la note MovieLens de l'utilisateur synthetiquement
+    rattache. Conservee pour comparaison historique documentee dans le
+    notebook -- voir ``add_sentiment_labels`` pour l'approche retenue.
 
     Ne supprime aucune ligne d'avis : un avis sans notation correspondante
     (ne devrait pas arriver vu la contrainte FK Gold, mais defensif) est
@@ -57,8 +81,44 @@ def add_sentiment_labels(
         on=["user_id", "film_id"],
         how="inner",
     )
-    merged["label"] = merged["note"].apply(derive_label_from_note)
+    merged["label"] = merged["note"].apply(derive_label_from_note_movielens_legacy)
     return merged
+
+
+# ---------------------------------------------------------------------------
+# Approche retenue (actuelle) : label derive de note_auteur (vraie note de
+# l'auteur de l'avis TMDB, 0-10, author_details.rating).
+# ---------------------------------------------------------------------------
+
+
+def derive_label_from_note_auteur(note_auteur: float) -> str:
+    """Derive un label de sentiment a partir de ``note_auteur`` (0-10), la
+    vraie note laissee par l'auteur de l'avis TMDB lui-meme
+    (``author_details.rating``).
+
+    Seuils choisis pour rester lisibles/explicables (convention usuelle des
+    notes sur 10 : <=4 = mauvais, >=7 = bon, 5-6 = mitige) plutot que calibres
+    finement sur la distribution empirique -- documente dans le notebook avec
+    la repartition de classes qui en resulte.
+    """
+    if note_auteur <= 4:
+        return LABEL_NEGATIF
+    if note_auteur >= 7:
+        return LABEL_POSITIF
+    return LABEL_NEUTRE
+
+
+def add_sentiment_labels(avis_df: pd.DataFrame) -> pd.DataFrame:
+    """Derive le label de sentiment directement depuis ``avis.note_auteur``
+    (approche retenue, remplace l'ancien rattachement via la note MovieLens).
+
+    Les avis sans ``note_auteur`` (non renseignee par TMDB) sont **exclus**
+    explicitement (pas de fallback sur l'ancien label bruite) : on prefere un
+    jeu de donnees plus petit mais fiable.
+    """
+    labeled = avis_df.dropna(subset=["note_auteur"]).copy()
+    labeled["label"] = labeled["note_auteur"].apply(derive_label_from_note_auteur)
+    return labeled
 
 
 def compute_text_length(df: pd.DataFrame, text_col: str = "texte") -> pd.DataFrame:
@@ -163,21 +223,74 @@ def extract_misclassified(
     y_pred: np.ndarray,
     text_col: str = "texte",
     max_chars: int = 300,
+    note_col: str = "note_auteur",
 ) -> pd.DataFrame:
     """Extrait les lignes mal classees avec un apercu tronque du texte.
 
-    Retourne les colonnes utiles a l'analyse d'erreurs : texte tronque,
-    note d'origine, label reel, label predit.
+    Retourne les colonnes utiles a l'analyse d'erreurs : texte tronque, note
+    d'origine (``note_auteur`` par defaut -- l'approche retenue ; passer
+    ``note_col="note"`` pour analyser la comparaison historique avec l'ancien
+    label MovieLens), label reel, label predit.
     """
     result = test_df.copy().reset_index(drop=True)
     result["label_reel"] = y_true
     result["label_predit"] = y_pred
     result["texte_apercu"] = result[text_col].str.slice(0, max_chars)
     mask = result["label_reel"] != result["label_predit"]
-    cols = ["user_id", "film_id", "note", "label_reel", "label_predit", "texte_apercu"]
+    cols = [
+        "user_id",
+        "film_id",
+        note_col,
+        "label_reel",
+        "label_predit",
+        "texte_apercu",
+    ]
     return result.loc[mask, cols].reset_index(drop=True)
 
 
 def clip_probabilities(probabilities: np.ndarray) -> np.ndarray:
     """Clippe des probabilites dans [0, 1] (garde-fou numerique)."""
     return np.clip(probabilities, 0.0, 1.0)
+
+
+# ---------------------------------------------------------------------------
+# Agregation d'un score de sentiment continu (endpoint /sentiment, SentimentScore)
+# ---------------------------------------------------------------------------
+
+_SCORE_BY_LABEL: dict[str, float] = {
+    LABEL_NEGATIF: 0.0,
+    LABEL_NEUTRE: 0.5,
+    LABEL_POSITIF: 1.0,
+}
+
+
+def expected_sentiment_score(
+    proba: np.ndarray, labels: list[str] | None = None
+) -> float:
+    """Score continu dans [0, 1] : esperance ponderee par les probabilites.
+
+    Mappe negatif -> 0.0, neutre -> 0.5, positif -> 1.0, pondere par la
+    probabilite predite de chaque classe. ``labels`` donne l'ordre des
+    colonnes de ``proba`` (ex. ``pipeline.classes_`` d'un classifieur
+    sklearn) ; par defaut, l'ordre canonique ``LABELS``. Sert a agreger un
+    sentiment par avis, puis plusieurs avis d'un meme film (moyenne), en un
+    score unique exploitable par l'endpoint `/sentiment`
+    (`api/routers/sentiment.py`, schema `SentimentScore.score`).
+    """
+    labels = labels or LABELS
+    weights = np.array([_SCORE_BY_LABEL[label] for label in labels])
+    return float(np.dot(np.asarray(proba), weights))
+
+
+def derive_label_from_score(score: float) -> str:
+    """Label agrege a partir d'un score continu dans [0, 1].
+
+    Seuils proportionnels a ceux de ``derive_label_from_note_auteur``
+    (echelle 0-10 divisee par 10, pour rester coherent avec le seuillage
+    utilise a l'entrainement) : <=0.4 negatif, >=0.7 positif, sinon neutre.
+    """
+    if score <= 0.4:
+        return LABEL_NEGATIF
+    if score >= 0.7:
+        return LABEL_POSITIF
+    return LABEL_NEUTRE
