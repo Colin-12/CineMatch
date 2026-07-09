@@ -6,6 +6,10 @@ class Film(BaseModel):
     titre: str
     annee: int
     genres: list[str]
+    overview: str | None = None
+    popularite: float | None = None
+    note_tmdb: float | None = None
+    affiche_path: str | None = None
 
 
 class Utilisateur(BaseModel):

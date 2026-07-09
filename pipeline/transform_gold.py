@@ -19,8 +19,17 @@ CREATE TABLE IF NOT EXISTS film (
     film_id INTEGER PRIMARY KEY,
     titre TEXT NOT NULL,
     annee INTEGER,
-    genres TEXT[] NOT NULL
+    genres TEXT[] NOT NULL,
+    overview TEXT,
+    popularite REAL,
+    note_tmdb REAL,
+    affiche_path TEXT
 );
+
+ALTER TABLE film ADD COLUMN IF NOT EXISTS overview TEXT;
+ALTER TABLE film ADD COLUMN IF NOT EXISTS popularite REAL;
+ALTER TABLE film ADD COLUMN IF NOT EXISTS note_tmdb REAL;
+ALTER TABLE film ADD COLUMN IF NOT EXISTS affiche_path TEXT;
 
 CREATE TABLE IF NOT EXISTS utilisateur (
     user_id INTEGER PRIMARY KEY,
@@ -105,18 +114,35 @@ def load_utilisateurs() -> int:
     return len(rows)
 
 
+FILM_COLUMNS = [
+    "film_id",
+    "titre",
+    "annee",
+    "genres",
+    "overview",
+    "popularite",
+    "note_tmdb",
+    "affiche_path",
+]
+
+
 @task
 def load_films() -> int:
-    """Charge silver/movies.csv dans la table film (full refresh idempotent)."""
+    """Charge silver/movies.csv dans la table film (full refresh idempotent).
+
+    Inclut l'enrichissement TMDB (overview, popularité, note, affiche) quand
+    disponible ; NULL sinon (couverture partielle du catalogue).
+    """
     logger = get_run_logger()
     df = pd.read_csv(SILVER_DIR / "movies.csv")
+    for col in ["overview", "popularite", "note_tmdb", "affiche_path"]:
+        if col not in df.columns:
+            df[col] = None
     df = df.astype(object).where(df.notna(), None)
     df["genres"] = df["genres"].apply(
         lambda g: g.split("|") if isinstance(g, str) else []
     )
-    rows = list(
-        df[["film_id", "titre", "annee", "genres"]].itertuples(index=False, name=None)
-    )
+    rows = list(df[FILM_COLUMNS].itertuples(index=False, name=None))
 
     conn = _connect()
     try:
@@ -124,7 +150,7 @@ def load_films() -> int:
             cur.execute("TRUNCATE TABLE film CASCADE")
             execute_values(
                 cur,
-                "INSERT INTO film (film_id, titre, annee, genres) VALUES %s",
+                f"INSERT INTO film ({', '.join(FILM_COLUMNS)}) VALUES %s",
                 rows,
                 page_size=1000,
             )
