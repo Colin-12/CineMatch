@@ -1,20 +1,11 @@
 """Endpoint /fiche : génère une fiche narrative de film via Gemini."""
 
-import os
-
-from dotenv import load_dotenv
 from fastapi import APIRouter
-from google import genai
-from google.genai import types
 from pydantic import BaseModel
 
-from api.db import fetch_film_by_titre
-
-load_dotenv()
+from api.llm_common import generate_structured, resolve_film
 
 router = APIRouter(prefix="/fiche", tags=["fiche"])
-
-GEMINI_MODEL = "gemini-2.5-flash"
 
 SYSTEM_INSTRUCTION_GROUNDED = (
     "Tu es un critique de cinéma qui rédige des fiches de films courtes et "
@@ -63,28 +54,6 @@ def _build_ungrounded_prompt(titre: str) -> str:
     )
 
 
-def _generate(system_instruction: str, prompt: str) -> FicheNarrative | None:
-    client = genai.Client(api_key=os.environ["GEMINI_API_KEY"])
-    config = types.GenerateContentConfig(
-        system_instruction=system_instruction,
-        thinking_config=types.ThinkingConfig(thinking_budget=0),
-        max_output_tokens=500,
-        response_mime_type="application/json",
-        response_schema=FicheNarrative,
-    )
-
-    for attempt_prompt in (
-        prompt,
-        prompt + "\n\n(Réponse précédente invalide, corrige le format JSON.)",
-    ):
-        response = client.models.generate_content(
-            model=GEMINI_MODEL, contents=attempt_prompt, config=config
-        )
-        if response.parsed is not None:
-            return response.parsed
-    return None
-
-
 @router.get("")
 def get_fiche(titre: str) -> dict:
     """Retourne la fiche narrative LLM d'un film recherché par titre.
@@ -93,33 +62,25 @@ def get_fiche(titre: str) -> dict:
     ancrée sur nos données réelles ; sinon Gemini répond depuis ses
     propres connaissances (source="connaissances_llm").
     """
-    film = fetch_film_by_titre(titre)
+    film, grounded = resolve_film(titre)
 
-    if film is not None:
-        fiche = _generate(SYSTEM_INSTRUCTION_GROUNDED, _build_grounded_prompt(film))
-        source = "catalogue"
-        meta = {
-            "film_id": film["film_id"],
-            "titre": film["titre"],
-            "annee": film["annee"],
-            "genres": film["genres"],
-            "affiche_path": film["affiche_path"],
-        }
-    else:
-        fiche = _generate(
-            SYSTEM_INSTRUCTION_UNGROUNDED, _build_ungrounded_prompt(titre)
+    if grounded:
+        fiche = generate_structured(
+            SYSTEM_INSTRUCTION_GROUNDED, _build_grounded_prompt(film), FicheNarrative
         )
-        source = "connaissances_llm"
-        meta = {
-            "film_id": None,
-            "titre": titre,
-            "annee": None,
-            "genres": [],
-            "affiche_path": None,
-        }
+    else:
+        fiche = generate_structured(
+            SYSTEM_INSTRUCTION_UNGROUNDED,
+            _build_ungrounded_prompt(titre),
+            FicheNarrative,
+        )
 
     return {
-        **meta,
-        "source": source,
+        "film_id": film["film_id"],
+        "titre": film["titre"],
+        "annee": film["annee"],
+        "genres": film["genres"],
+        "affiche_path": film["affiche_path"],
+        "source": "catalogue" if grounded else "connaissances_llm",
         "fiche": fiche.model_dump() if fiche else None,
     }
