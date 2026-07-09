@@ -12,10 +12,19 @@ psycopg2-binary
 scikit-learn
 lightgbm
 joblib
+shap
+matplotlib
+
+# Notebooks
+notebook
+nbformat
+ipykernel
 
 # NLP
 transformers
 torch
+datasets
+accelerate
 
 # LLM
 anthropic
