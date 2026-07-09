@@ -50,8 +50,11 @@ CREATE TABLE IF NOT EXISTS avis (
     film_id INTEGER NOT NULL REFERENCES film(film_id),
     texte TEXT NOT NULL,
     timestamp BIGINT NOT NULL,
+    note_auteur REAL,
     PRIMARY KEY (user_id, film_id)
 );
+
+ALTER TABLE avis ADD COLUMN IF NOT EXISTS note_auteur REAL;
 
 CREATE TABLE IF NOT EXISTS sentiment_score (
     film_id INTEGER PRIMARY KEY REFERENCES film(film_id),
@@ -214,16 +217,15 @@ def load_avis() -> int:
         return 0
 
     df = pd.read_csv(avis_path)
+    if "note_auteur" not in df.columns:
+        df["note_auteur"] = None
+    avis_columns = ["user_id", "film_id", "texte", "timestamp", "note_auteur"]
 
     GOLD_DIR.mkdir(parents=True, exist_ok=True)
-    df[["user_id", "film_id", "texte", "timestamp"]].to_parquet(
-        GOLD_DIR / "avis.parquet", index=False
-    )
+    df[avis_columns].to_parquet(GOLD_DIR / "avis.parquet", index=False)
 
     buffer = io.StringIO()
-    df[["user_id", "film_id", "texte", "timestamp"]].to_csv(
-        buffer, index=False, header=False
-    )
+    df[avis_columns].to_csv(buffer, index=False, header=False)
     buffer.seek(0)
 
     conn = _connect()
@@ -231,7 +233,7 @@ def load_avis() -> int:
         with conn.cursor() as cur:
             cur.execute("TRUNCATE TABLE avis CASCADE")
             cur.copy_expert(
-                "COPY avis (user_id, film_id, texte, timestamp) "
+                f"COPY avis ({', '.join(avis_columns)}) "
                 "FROM STDIN WITH (FORMAT csv)",
                 buffer,
             )

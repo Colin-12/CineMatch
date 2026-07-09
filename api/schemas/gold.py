@@ -29,6 +29,7 @@ class Avis(BaseModel):
     film_id: int
     texte: str
     timestamp: int
+    note_auteur: float | None = None
 
 
 class SentimentScore(BaseModel):
