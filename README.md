@@ -65,6 +65,59 @@ complet testé à ~1 min pour l'ensemble Bronze→Gold (seuil Milestone 3 : < 10
 Sans `TMDB_API_KEY`, l'ingestion TMDB (enrichissement des films + avis) est
 ignorée proprement (warning, pas d'erreur) — seul MovieLens est chargé.
 
+## État d'avancement (J3)
+
+### ✅ Data & Pipeline (Personne A)
+
+- Bronze : MovieLens 1M (téléchargement + extraction) + enrichissement TMDB
+  (recherche par film + avis), requêtes parallélisées (~1min20 pour 1800
+  films au lieu de ~35-40min en séquentiel).
+- Silver : nettoyage/typage/dédoublonnage (movies, users, ratings, avis).
+  Les avis sont construits à partir des reviews TMDB, rattachés à un
+  utilisateur MovieLens ayant réellement noté le film (tirage aléatoire
+  sans remise parmi les vrais votants, pour respecter les FK).
+- Gold : tables `film` (enrichie TMDB : synopsis/popularité/note/affiche),
+  `utilisateur`, `notation`, `avis` chargées dans Supabase (Postgres) +
+  snapshot Parquet local dans `data/gold/`. `sentiment_score` et
+  `prediction_note` existent en schéma mais restent vides (Personne B).
+- Pipeline complet Bronze→Gold : ~1 min, idempotent (testé sur double
+  exécution, 0 doublon).
+- CI GitHub Actions (flake8 + pytest) verte, config flake8 alignée sur
+  black (88 col).
+
+**Chiffres actuels** : 3 883 films, 6 040 utilisateurs, 1 000 209
+notations, 2 082 avis (856 films couverts).
+
+### ✅ LLM & Restitution (Personne C)
+
+Provider : **Google Gemini** (`gemini-2.5-flash`, thinking désactivé pour
+la latence) — changement par rapport à la feuille de route initiale
+(Anthropic), pour raison de budget.
+
+- `GET /fiche?titre=...` — fiche narrative structurée (accroche, résumé,
+  ambiance, pourquoi la regarder). Recherche par titre dans le catalogue
+  Gold ; si absent, Gemini répond depuis ses connaissances
+  (`source: "connaissances_llm"`). ~3-4s.
+- `GET /comparaison?titre_1=...&titre_2=...` — compare 2 films (points
+  communs, différences clés, note comparative appuyée sur les vraies
+  notes TMDB quand disponibles). Chaque film résolu indépendamment
+  (catalogue ou connaissances LLM). ~3-4s.
+- `GET /recommandation?duree_max_heures=...&genre=...&note_min=...` —
+  ≥5 suggestions justifiées à partir d'un formulaire d'envies, basé
+  uniquement sur les connaissances de Gemini (pas de filtrage catalogue).
+  ~3-4s.
+- Dashboard Streamlit : les 3 vues LLM branchées sur l'API réelle
+  (affiches TMDB, badges de source, gestion d'erreurs propre). Vues
+  Prédiction/Sentiment/Admin en placeholder (dépendent de Personne B).
+
+### ⬜ ML & NLP (Personne B)
+
+- Prédiction de note (SVD/LightGBM sur `notation`, 1M lignes disponibles)
+  et fine-tuning sentiment (sur `avis`, 2 082 lignes disponibles, labels
+  à définir) — pas encore démarré à ce stade.
+- Endpoints `/prediction` et `/sentiment` : stubs FastAPI en place,
+  logique à implémenter.
+
 ## Conventions
 
 Voir la feuille de route équipe (`docs/milestones/`) pour les conventions Git, Python, secrets et versioning des modèles.
