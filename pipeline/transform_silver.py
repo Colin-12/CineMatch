@@ -1,6 +1,7 @@
 """Transformation Silver : nettoyage, typage, dédoublonnage."""
 
 import json
+import random
 from pathlib import Path
 
 import pandas as pd
@@ -9,6 +10,7 @@ from prefect import flow, get_run_logger, task
 DATA_DIR = Path(__file__).resolve().parent.parent / "data"
 MOVIELENS_DIR = DATA_DIR / "bronze" / "movielens"
 TMDB_CACHE_DIR = DATA_DIR / "bronze" / "tmdb_cache"
+TMDB_REVIEWS_CACHE_DIR = DATA_DIR / "bronze" / "tmdb_reviews_cache"
 SILVER_DIR = DATA_DIR / "silver"
 
 
@@ -110,12 +112,46 @@ def clean_ratings() -> pd.DataFrame:
 
 
 @task
-def write_silver(movies: pd.DataFrame, users: pd.DataFrame, ratings: pd.DataFrame) -> None:
+def clean_avis(ratings: pd.DataFrame) -> pd.DataFrame:
+    """Construit les avis à partir du cache d'avis TMDB, rattachés à un utilisateur MovieLens ayant
+    réellement noté le film (tirage aléatoire sans remise parmi les vrais votants, pour respecter les FK)."""
+    logger = get_run_logger()
+    random.seed(42)
+    raters_by_film = ratings.groupby("film_id")["user_id"].apply(list).to_dict()
+
+    rows = []
+    for cache_file in TMDB_REVIEWS_CACHE_DIR.glob("*.json"):
+        film_id = int(cache_file.stem)
+        reviews = json.loads(cache_file.read_text()).get("results") or []
+        candidates = raters_by_film.get(film_id, [])
+        if not reviews or not candidates:
+            continue
+
+        sample_size = min(len(reviews), len(candidates))
+        sampled_users = random.sample(candidates, sample_size)
+        for review, user_id in zip(reviews[:sample_size], sampled_users):
+            texte = (review.get("content") or "").strip()
+            if not texte:
+                continue
+            created_at = review.get("created_at")
+            timestamp = int(pd.Timestamp(created_at).timestamp()) if created_at else 0
+            rows.append({"user_id": user_id, "film_id": film_id, "texte": texte, "timestamp": timestamp})
+
+    df = pd.DataFrame(rows, columns=["user_id", "film_id", "texte", "timestamp"])
+    df = df.drop_duplicates(subset=["user_id", "film_id"], keep="first")
+
+    logger.info(f"clean_avis: {len(df)} avis construits (TMDB, rattachement synthétique aux utilisateurs)")
+    return df
+
+
+@task
+def write_silver(movies: pd.DataFrame, users: pd.DataFrame, ratings: pd.DataFrame, avis: pd.DataFrame) -> None:
     """Écrit les DataFrames nettoyés dans data/silver/ (CSV, idempotent : écrase à chaque run)."""
     SILVER_DIR.mkdir(parents=True, exist_ok=True)
     movies.to_csv(SILVER_DIR / "movies.csv", index=False)
     users.to_csv(SILVER_DIR / "users.csv", index=False)
     ratings.to_csv(SILVER_DIR / "ratings.csv", index=False)
+    avis.to_csv(SILVER_DIR / "avis.csv", index=False)
 
 
 @flow(name="transform-silver")
@@ -123,7 +159,8 @@ def transform_silver() -> None:
     movies = clean_movies()
     users = clean_users()
     ratings = clean_ratings()
-    write_silver(movies, users, ratings)
+    avis = clean_avis(ratings)
+    write_silver(movies, users, ratings, avis)
 
 
 if __name__ == "__main__":

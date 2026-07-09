@@ -146,12 +146,43 @@ def load_notations() -> int:
 
 
 @task
-def build_gold_tables(utilisateurs: int, films: int, notations: int) -> None:
-    """Log récapitulatif ; avis/sentiment_score/prediction_note restent vides (sources pas encore définies)."""
+def load_avis() -> int:
+    """Charge silver/avis.csv (avis TMDB rattachés aux utilisateurs) dans la table avis via COPY (full refresh idempotent)."""
+    logger = get_run_logger()
+    avis_path = SILVER_DIR / "avis.csv"
+    if not avis_path.exists():
+        logger.warning("silver/avis.csv absent, chargement des avis ignoré.")
+        return 0
+
+    df = pd.read_csv(avis_path)
+
+    buffer = io.StringIO()
+    df[["user_id", "film_id", "texte", "timestamp"]].to_csv(buffer, index=False, header=False)
+    buffer.seek(0)
+
+    conn = _connect()
+    try:
+        with conn.cursor() as cur:
+            cur.execute("TRUNCATE TABLE avis CASCADE")
+            cur.copy_expert(
+                "COPY avis (user_id, film_id, texte, timestamp) FROM STDIN WITH (FORMAT csv)",
+                buffer,
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+    logger.info(f"avis: {len(df)} lignes chargées")
+    return len(df)
+
+
+@task
+def build_gold_tables(utilisateurs: int, films: int, notations: int, avis: int) -> None:
+    """Log récapitulatif."""
     logger = get_run_logger()
     logger.info(
-        f"Gold peuplé : {utilisateurs} utilisateurs, {films} films, {notations} notations. "
-        "Table avis vide (source des avis à définir par la Personne B, cf. risque R7)."
+        f"Gold peuplé : {utilisateurs} utilisateurs, {films} films, {notations} notations, {avis} avis. "
+        "sentiment_score/prediction_note restent vides (à peupler par Personne B, modèles ML/NLP)."
     )
 
 
@@ -161,7 +192,8 @@ def transform_gold() -> None:
     utilisateurs = load_utilisateurs()
     films = load_films()
     notations = load_notations()
-    build_gold_tables(utilisateurs, films, notations)
+    avis = load_avis()
+    build_gold_tables(utilisateurs, films, notations, avis)
 
 
 if __name__ == "__main__":

@@ -4,6 +4,7 @@ import json
 import os
 import time
 import zipfile
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 import requests
@@ -15,12 +16,23 @@ load_dotenv()
 BRONZE_DIR = Path(__file__).resolve().parent.parent / "data" / "bronze"
 MOVIELENS_DIR = BRONZE_DIR / "movielens"
 TMDB_CACHE_DIR = BRONZE_DIR / "tmdb_cache"
+TMDB_REVIEWS_CACHE_DIR = BRONZE_DIR / "tmdb_reviews_cache"
 
 MOVIELENS_URL = "https://files.grouplens.org/datasets/movielens/ml-1m.zip"
 MOVIELENS_FILES = ["movies.dat", "ratings.dat", "users.dat"]
 
 TMDB_BASE_URL = "https://api.themoviedb.org/3"
-TMDB_RATE_LIMIT_SECONDS = 0.3
+TMDB_MAX_WORKERS = 10
+
+
+def _get_with_backoff(session: requests.Session, url: str, params: dict) -> requests.Response | None:
+    """GET avec retry/backoff sur 429 (rate limit TMDB)."""
+    for _ in range(4):
+        response = session.get(url, params=params, timeout=10)
+        if response.status_code != 429:
+            return response
+        time.sleep(float(response.headers.get("Retry-After", 1)))
+    return response
 
 
 @task
@@ -72,9 +84,22 @@ def _tmdb_cache_path(movie_id: int) -> Path:
     return TMDB_CACHE_DIR / f"{movie_id}.json"
 
 
+def _fetch_movie_search(session: requests.Session, api_key: str, movie_id: int, titre: str, annee: int) -> str | None:
+    params = {"api_key": api_key, "query": titre}
+    if annee:
+        params["year"] = annee
+
+    response = _get_with_backoff(session, f"{TMDB_BASE_URL}/search/movie", params)
+    if response is None or response.status_code != 200:
+        return f"'{titre}' ({movie_id}): {response.status_code if response else 'timeout'}"
+
+    _tmdb_cache_path(movie_id).write_text(json.dumps(response.json(), ensure_ascii=False))
+    return None
+
+
 @task
 def ingest_tmdb(limit: int | None = None) -> Path:
-    """Enrichit chaque film MovieLens via l'API TMDB (recherche titre/année), cache local + throttling."""
+    """Enrichit chaque film MovieLens via l'API TMDB (recherche titre/année), cache local, requêtes parallélisées."""
     logger = get_run_logger()
     api_key = os.getenv("TMDB_API_KEY")
     if not api_key:
@@ -85,34 +110,78 @@ def ingest_tmdb(limit: int | None = None) -> Path:
     movies = _parse_movielens_titles()
     if limit is not None:
         movies = movies[:limit]
+    movies = [m for m in movies if not _tmdb_cache_path(m[0]).exists()]
 
     session = requests.Session()
-    for movie_id, titre, annee in movies:
-        cache_path = _tmdb_cache_path(movie_id)
-        if cache_path.exists():
-            continue
+    errors = 0
+    with ThreadPoolExecutor(max_workers=TMDB_MAX_WORKERS) as executor:
+        futures = [executor.submit(_fetch_movie_search, session, api_key, mid, titre, annee) for mid, titre, annee in movies]
+        for future in as_completed(futures):
+            error = future.result()
+            if error:
+                errors += 1
+                logger.warning(f"TMDB: échec requête pour {error}")
 
-        params = {"api_key": api_key, "query": titre}
-        if annee:
-            params["year"] = annee
-
-        response = session.get(f"{TMDB_BASE_URL}/search/movie", params=params, timeout=10)
-        time.sleep(TMDB_RATE_LIMIT_SECONDS)
-
-        if response.status_code != 200:
-            logger.warning(f"TMDB: échec requête pour '{titre}' ({movie_id}): {response.status_code}")
-            continue
-
-        cache_path.write_text(json.dumps(response.json(), ensure_ascii=False))
-
-    logger.info(f"Cache TMDB peuplé dans {TMDB_CACHE_DIR}")
+    logger.info(f"Cache TMDB peuplé dans {TMDB_CACHE_DIR} ({len(movies)} films interrogés, {errors} échecs)")
     return TMDB_CACHE_DIR
+
+
+def _tmdb_reviews_cache_path(movie_id: int) -> Path:
+    return TMDB_REVIEWS_CACHE_DIR / f"{movie_id}.json"
+
+
+def _fetch_movie_reviews(session: requests.Session, api_key: str, movie_id: int, tmdb_id: int) -> str | None:
+    response = _get_with_backoff(session, f"{TMDB_BASE_URL}/movie/{tmdb_id}/reviews", {"api_key": api_key})
+    if response is None or response.status_code != 200:
+        return f"movie_id={movie_id} (tmdb_id={tmdb_id}): {response.status_code if response else 'timeout'}"
+
+    _tmdb_reviews_cache_path(movie_id).write_text(json.dumps(response.json(), ensure_ascii=False))
+    return None
+
+
+@task
+def ingest_tmdb_reviews(limit: int | None = None) -> Path:
+    """Récupère les avis TMDB (/movie/{tmdb_id}/reviews) pour les films déjà identifiés via ingest_tmdb, cache local, requêtes parallélisées."""
+    logger = get_run_logger()
+    api_key = os.getenv("TMDB_API_KEY")
+    if not api_key:
+        logger.warning("TMDB_API_KEY absente de l'environnement, ingestion des avis TMDB ignorée.")
+        return TMDB_REVIEWS_CACHE_DIR
+
+    TMDB_REVIEWS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    cache_files = sorted(TMDB_CACHE_DIR.glob("*.json"))
+    if limit is not None:
+        cache_files = cache_files[:limit]
+
+    targets = []
+    for cache_file in cache_files:
+        movie_id = int(cache_file.stem)
+        if _tmdb_reviews_cache_path(movie_id).exists():
+            continue
+        results = json.loads(cache_file.read_text()).get("results") or []
+        if not results or not results[0].get("id"):
+            continue
+        targets.append((movie_id, results[0]["id"]))
+
+    session = requests.Session()
+    errors = 0
+    with ThreadPoolExecutor(max_workers=TMDB_MAX_WORKERS) as executor:
+        futures = [executor.submit(_fetch_movie_reviews, session, api_key, mid, tmdb_id) for mid, tmdb_id in targets]
+        for future in as_completed(futures):
+            error = future.result()
+            if error:
+                errors += 1
+                logger.warning(f"TMDB reviews: échec requête pour {error}")
+
+    logger.info(f"Cache avis TMDB peuplé dans {TMDB_REVIEWS_CACHE_DIR} ({len(targets)} films interrogés, {errors} échecs)")
+    return TMDB_REVIEWS_CACHE_DIR
 
 
 @flow(name="ingestion-bronze")
 def ingestion_bronze(tmdb_limit: int | None = None) -> None:
     ingest_movielens()
     ingest_tmdb(limit=tmdb_limit)
+    ingest_tmdb_reviews(limit=tmdb_limit)
 
 
 if __name__ == "__main__":
