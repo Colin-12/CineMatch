@@ -128,7 +128,10 @@ def clean_avis(ratings: pd.DataFrame) -> pd.DataFrame:
 
     Chaque avis est rattaché à un utilisateur MovieLens ayant réellement noté
     le film (tirage aléatoire sans remise parmi les vrais votants, pour
-    respecter les FK).
+    respecter les FK). Conserve la vraie note de l'auteur de l'avis TMDB
+    (`author_details.rating`, 0-10, ~95% de couverture) dans `note_auteur` —
+    utile comme label réel pour l'entraînement du modèle de sentiment
+    (à la différence du rattachement user_id, qui reste synthétique).
     """
     logger = get_run_logger()
     random.seed(42)
@@ -150,21 +153,26 @@ def clean_avis(ratings: pd.DataFrame) -> pd.DataFrame:
                 continue
             created_at = review.get("created_at")
             timestamp = int(pd.Timestamp(created_at).timestamp()) if created_at else 0
+            note_auteur = (review.get("author_details") or {}).get("rating")
             rows.append(
                 {
                     "user_id": user_id,
                     "film_id": film_id,
                     "texte": texte,
                     "timestamp": timestamp,
+                    "note_auteur": note_auteur,
                 }
             )
 
-    df = pd.DataFrame(rows, columns=["user_id", "film_id", "texte", "timestamp"])
+    df = pd.DataFrame(
+        rows, columns=["user_id", "film_id", "texte", "timestamp", "note_auteur"]
+    )
     df = df.drop_duplicates(subset=["user_id", "film_id"], keep="first")
 
+    avec_note = df["note_auteur"].notna().sum()
     logger.info(
-        f"clean_avis: {len(df)} avis construits "
-        "(TMDB, rattachement synthétique aux utilisateurs)"
+        f"clean_avis: {len(df)} avis construits (TMDB, rattachement "
+        f"synthétique aux utilisateurs), {avec_note} avec note_auteur réelle"
     )
     return df
 
