@@ -25,7 +25,7 @@ def _split_title_year(title: str) -> tuple[str, int | None]:
 
 @task
 def clean_movies() -> pd.DataFrame:
-    """Charge movies.dat, type et dédoublonne par movie_id, enrichit avec le cache TMDB."""
+    """Charge movies.dat, type/dédoublonne par movie_id, enrichit avec le cache TMDB."""
     logger = get_run_logger()
     df = pd.read_csv(
         MOVIELENS_DIR / "movies.dat",
@@ -35,7 +35,9 @@ def clean_movies() -> pd.DataFrame:
         header=None,
         names=["film_id", "titre_brut", "genres"],
     )
-    df[["titre", "annee"]] = df["titre_brut"].apply(lambda t: pd.Series(_split_title_year(t)))
+    df[["titre", "annee"]] = df["titre_brut"].apply(
+        lambda t: pd.Series(_split_title_year(t))
+    )
     df["film_id"] = df["film_id"].astype(int)
     df["annee"] = df["annee"].astype("Int64")
     df["genres"] = df["genres"].astype(str)
@@ -60,7 +62,11 @@ def clean_movies() -> pd.DataFrame:
             }
         )
     if tmdb_rows:
-        df = df.merge(pd.DataFrame(tmdb_rows).drop_duplicates(subset="film_id"), on="film_id", how="left")
+        df = df.merge(
+            pd.DataFrame(tmdb_rows).drop_duplicates(subset="film_id"),
+            on="film_id",
+            how="left",
+        )
 
     logger.info(f"clean_movies: {len(df)} films (dont {len(tmdb_rows)} enrichis TMDB)")
     return df
@@ -91,7 +97,10 @@ def clean_users() -> pd.DataFrame:
 
 @task
 def clean_ratings() -> pd.DataFrame:
-    """Charge ratings.dat, type et dédoublonne par (user_id, film_id) en gardant le timestamp le plus récent."""
+    """Charge ratings.dat, type et dédoublonne par (user_id, film_id).
+
+    Garde le timestamp le plus récent en cas de doublon.
+    """
     logger = get_run_logger()
     df = pd.read_csv(
         MOVIELENS_DIR / "ratings.dat",
@@ -105,7 +114,9 @@ def clean_ratings() -> pd.DataFrame:
     df["film_id"] = df["film_id"].astype(int)
     df["note"] = df["note"].astype(float)
     df["timestamp"] = df["timestamp"].astype(int)
-    df = df.sort_values("timestamp").drop_duplicates(subset=["user_id", "film_id"], keep="last")
+    df = df.sort_values("timestamp").drop_duplicates(
+        subset=["user_id", "film_id"], keep="last"
+    )
 
     logger.info(f"clean_ratings: {len(df)} notations")
     return df
@@ -113,8 +124,12 @@ def clean_ratings() -> pd.DataFrame:
 
 @task
 def clean_avis(ratings: pd.DataFrame) -> pd.DataFrame:
-    """Construit les avis à partir du cache d'avis TMDB, rattachés à un utilisateur MovieLens ayant
-    réellement noté le film (tirage aléatoire sans remise parmi les vrais votants, pour respecter les FK)."""
+    """Construit les avis à partir du cache d'avis TMDB.
+
+    Chaque avis est rattaché à un utilisateur MovieLens ayant réellement noté
+    le film (tirage aléatoire sans remise parmi les vrais votants, pour
+    respecter les FK).
+    """
     logger = get_run_logger()
     random.seed(42)
     raters_by_film = ratings.groupby("film_id")["user_id"].apply(list).to_dict()
@@ -135,18 +150,30 @@ def clean_avis(ratings: pd.DataFrame) -> pd.DataFrame:
                 continue
             created_at = review.get("created_at")
             timestamp = int(pd.Timestamp(created_at).timestamp()) if created_at else 0
-            rows.append({"user_id": user_id, "film_id": film_id, "texte": texte, "timestamp": timestamp})
+            rows.append(
+                {
+                    "user_id": user_id,
+                    "film_id": film_id,
+                    "texte": texte,
+                    "timestamp": timestamp,
+                }
+            )
 
     df = pd.DataFrame(rows, columns=["user_id", "film_id", "texte", "timestamp"])
     df = df.drop_duplicates(subset=["user_id", "film_id"], keep="first")
 
-    logger.info(f"clean_avis: {len(df)} avis construits (TMDB, rattachement synthétique aux utilisateurs)")
+    logger.info(
+        f"clean_avis: {len(df)} avis construits "
+        "(TMDB, rattachement synthétique aux utilisateurs)"
+    )
     return df
 
 
 @task
-def write_silver(movies: pd.DataFrame, users: pd.DataFrame, ratings: pd.DataFrame, avis: pd.DataFrame) -> None:
-    """Écrit les DataFrames nettoyés dans data/silver/ (CSV, idempotent : écrase à chaque run)."""
+def write_silver(
+    movies: pd.DataFrame, users: pd.DataFrame, ratings: pd.DataFrame, avis: pd.DataFrame
+) -> None:
+    """Écrit les DataFrames nettoyés dans data/silver/ (CSV, écrasé à chaque run)."""
     SILVER_DIR.mkdir(parents=True, exist_ok=True)
     movies.to_csv(SILVER_DIR / "movies.csv", index=False)
     users.to_csv(SILVER_DIR / "users.csv", index=False)

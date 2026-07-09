@@ -25,7 +25,9 @@ TMDB_BASE_URL = "https://api.themoviedb.org/3"
 TMDB_MAX_WORKERS = 10
 
 
-def _get_with_backoff(session: requests.Session, url: str, params: dict) -> requests.Response | None:
+def _get_with_backoff(
+    session: requests.Session, url: str, params: dict
+) -> requests.Response | None:
     """GET avec retry/backoff sur 429 (rate limit TMDB)."""
     for _ in range(4):
         response = session.get(url, params=params, timeout=10)
@@ -37,7 +39,7 @@ def _get_with_backoff(session: requests.Session, url: str, params: dict) -> requ
 
 @task
 def ingest_movielens() -> Path:
-    """Télécharge (si absent) et extrait users/movies/ratings dans data/bronze/movielens/."""
+    """Télécharge et extrait users/movies/ratings dans data/bronze/movielens."""
     logger = get_run_logger()
     MOVIELENS_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -54,7 +56,9 @@ def ingest_movielens() -> Path:
 
     with zipfile.ZipFile(zip_path) as archive:
         for name in MOVIELENS_FILES:
-            with archive.open(f"ml-1m/{name}") as src, open(MOVIELENS_DIR / name, "wb") as dst:
+            with archive.open(f"ml-1m/{name}") as src, open(
+                MOVIELENS_DIR / name, "wb"
+            ) as dst:
                 dst.write(src.read())
 
     zip_path.unlink()
@@ -84,26 +88,37 @@ def _tmdb_cache_path(movie_id: int) -> Path:
     return TMDB_CACHE_DIR / f"{movie_id}.json"
 
 
-def _fetch_movie_search(session: requests.Session, api_key: str, movie_id: int, titre: str, annee: int) -> str | None:
+def _fetch_movie_search(
+    session: requests.Session, api_key: str, movie_id: int, titre: str, annee: int
+) -> str | None:
     params = {"api_key": api_key, "query": titre}
     if annee:
         params["year"] = annee
 
     response = _get_with_backoff(session, f"{TMDB_BASE_URL}/search/movie", params)
     if response is None or response.status_code != 200:
-        return f"'{titre}' ({movie_id}): {response.status_code if response else 'timeout'}"
+        return (
+            f"'{titre}' ({movie_id}): {response.status_code if response else 'timeout'}"
+        )
 
-    _tmdb_cache_path(movie_id).write_text(json.dumps(response.json(), ensure_ascii=False))
+    _tmdb_cache_path(movie_id).write_text(
+        json.dumps(response.json(), ensure_ascii=False)
+    )
     return None
 
 
 @task
 def ingest_tmdb(limit: int | None = None) -> Path:
-    """Enrichit chaque film MovieLens via l'API TMDB (recherche titre/année), cache local, requêtes parallélisées."""
+    """Enrichit chaque film MovieLens via l'API TMDB (recherche titre/année).
+
+    Cache local, requêtes parallélisées.
+    """
     logger = get_run_logger()
     api_key = os.getenv("TMDB_API_KEY")
     if not api_key:
-        logger.warning("TMDB_API_KEY absente de l'environnement, ingestion TMDB ignorée.")
+        logger.warning(
+            "TMDB_API_KEY absente de l'environnement, ingestion TMDB ignorée."
+        )
         return TMDB_CACHE_DIR
 
     TMDB_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -115,14 +130,20 @@ def ingest_tmdb(limit: int | None = None) -> Path:
     session = requests.Session()
     errors = 0
     with ThreadPoolExecutor(max_workers=TMDB_MAX_WORKERS) as executor:
-        futures = [executor.submit(_fetch_movie_search, session, api_key, mid, titre, annee) for mid, titre, annee in movies]
+        futures = [
+            executor.submit(_fetch_movie_search, session, api_key, mid, titre, annee)
+            for mid, titre, annee in movies
+        ]
         for future in as_completed(futures):
             error = future.result()
             if error:
                 errors += 1
                 logger.warning(f"TMDB: échec requête pour {error}")
 
-    logger.info(f"Cache TMDB peuplé dans {TMDB_CACHE_DIR} ({len(movies)} films interrogés, {errors} échecs)")
+    logger.info(
+        f"Cache TMDB peuplé dans {TMDB_CACHE_DIR} "
+        f"({len(movies)} films interrogés, {errors} échecs)"
+    )
     return TMDB_CACHE_DIR
 
 
@@ -130,22 +151,34 @@ def _tmdb_reviews_cache_path(movie_id: int) -> Path:
     return TMDB_REVIEWS_CACHE_DIR / f"{movie_id}.json"
 
 
-def _fetch_movie_reviews(session: requests.Session, api_key: str, movie_id: int, tmdb_id: int) -> str | None:
-    response = _get_with_backoff(session, f"{TMDB_BASE_URL}/movie/{tmdb_id}/reviews", {"api_key": api_key})
+def _fetch_movie_reviews(
+    session: requests.Session, api_key: str, movie_id: int, tmdb_id: int
+) -> str | None:
+    response = _get_with_backoff(
+        session, f"{TMDB_BASE_URL}/movie/{tmdb_id}/reviews", {"api_key": api_key}
+    )
     if response is None or response.status_code != 200:
-        return f"movie_id={movie_id} (tmdb_id={tmdb_id}): {response.status_code if response else 'timeout'}"
+        status = response.status_code if response else "timeout"
+        return f"movie_id={movie_id} (tmdb_id={tmdb_id}): {status}"
 
-    _tmdb_reviews_cache_path(movie_id).write_text(json.dumps(response.json(), ensure_ascii=False))
+    _tmdb_reviews_cache_path(movie_id).write_text(
+        json.dumps(response.json(), ensure_ascii=False)
+    )
     return None
 
 
 @task
 def ingest_tmdb_reviews(limit: int | None = None) -> Path:
-    """Récupère les avis TMDB (/movie/{tmdb_id}/reviews) pour les films déjà identifiés via ingest_tmdb, cache local, requêtes parallélisées."""
+    """Récupère les avis TMDB (/movie/{tmdb_id}/reviews) pour les films déjà identifiés.
+
+    Utilise le cache de ingest_tmdb, cache local, requêtes parallélisées.
+    """
     logger = get_run_logger()
     api_key = os.getenv("TMDB_API_KEY")
     if not api_key:
-        logger.warning("TMDB_API_KEY absente de l'environnement, ingestion des avis TMDB ignorée.")
+        logger.warning(
+            "TMDB_API_KEY absente de l'environnement, ingestion des avis TMDB ignorée."
+        )
         return TMDB_REVIEWS_CACHE_DIR
 
     TMDB_REVIEWS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
@@ -166,14 +199,20 @@ def ingest_tmdb_reviews(limit: int | None = None) -> Path:
     session = requests.Session()
     errors = 0
     with ThreadPoolExecutor(max_workers=TMDB_MAX_WORKERS) as executor:
-        futures = [executor.submit(_fetch_movie_reviews, session, api_key, mid, tmdb_id) for mid, tmdb_id in targets]
+        futures = [
+            executor.submit(_fetch_movie_reviews, session, api_key, mid, tmdb_id)
+            for mid, tmdb_id in targets
+        ]
         for future in as_completed(futures):
             error = future.result()
             if error:
                 errors += 1
                 logger.warning(f"TMDB reviews: échec requête pour {error}")
 
-    logger.info(f"Cache avis TMDB peuplé dans {TMDB_REVIEWS_CACHE_DIR} ({len(targets)} films interrogés, {errors} échecs)")
+    logger.info(
+        f"Cache avis TMDB peuplé dans {TMDB_REVIEWS_CACHE_DIR} "
+        f"({len(targets)} films interrogés, {errors} échecs)"
+    )
     return TMDB_REVIEWS_CACHE_DIR
 
 

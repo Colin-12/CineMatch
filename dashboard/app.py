@@ -1,10 +1,17 @@
-"""Dashboard Streamlit CineMatch : fiche, comparaison, recommandation, prédiction, sentiment + vue admin."""
+"""Dashboard Streamlit CineMatch : fiche, comparaison, recommandation, prédiction."""
 
 import streamlit as st
 
 st.set_page_config(page_title="CineMatch", layout="wide")
 
-PAGES = ["Fiche", "Comparaison", "Recommandation", "Prédiction de note", "Sentiment", "Admin"]
+PAGES = [
+    "Fiche",
+    "Comparaison",
+    "Recommandation",
+    "Prédiction de note",
+    "Sentiment",
+    "Admin",
+]
 
 page = st.sidebar.radio("Navigation", PAGES)
 

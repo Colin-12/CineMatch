@@ -73,7 +73,10 @@ def create_schema() -> None:
         conn.commit()
     finally:
         conn.close()
-    logger.info("Schéma Gold vérifié/créé (film, utilisateur, notation, avis, sentiment_score, prediction_note).")
+    logger.info(
+        "Schéma Gold vérifié/créé (film, utilisateur, notation, avis, "
+        "sentiment_score, prediction_note)."
+    )
 
 
 @task
@@ -88,7 +91,12 @@ def load_utilisateurs() -> int:
     try:
         with conn.cursor() as cur:
             cur.execute("TRUNCATE TABLE utilisateur CASCADE")
-            execute_values(cur, "INSERT INTO utilisateur (user_id, age) VALUES %s", rows, page_size=1000)
+            execute_values(
+                cur,
+                "INSERT INTO utilisateur (user_id, age) VALUES %s",
+                rows,
+                page_size=1000,
+            )
         conn.commit()
     finally:
         conn.close()
@@ -103,14 +111,23 @@ def load_films() -> int:
     logger = get_run_logger()
     df = pd.read_csv(SILVER_DIR / "movies.csv")
     df = df.astype(object).where(df.notna(), None)
-    df["genres"] = df["genres"].apply(lambda g: g.split("|") if isinstance(g, str) else [])
-    rows = list(df[["film_id", "titre", "annee", "genres"]].itertuples(index=False, name=None))
+    df["genres"] = df["genres"].apply(
+        lambda g: g.split("|") if isinstance(g, str) else []
+    )
+    rows = list(
+        df[["film_id", "titre", "annee", "genres"]].itertuples(index=False, name=None)
+    )
 
     conn = _connect()
     try:
         with conn.cursor() as cur:
             cur.execute("TRUNCATE TABLE film CASCADE")
-            execute_values(cur, "INSERT INTO film (film_id, titre, annee, genres) VALUES %s", rows, page_size=1000)
+            execute_values(
+                cur,
+                "INSERT INTO film (film_id, titre, annee, genres) VALUES %s",
+                rows,
+                page_size=1000,
+            )
         conn.commit()
     finally:
         conn.close()
@@ -121,12 +138,14 @@ def load_films() -> int:
 
 @task
 def load_notations() -> int:
-    """Charge silver/ratings.csv dans la table notation via COPY (full refresh idempotent)."""
+    """Charge silver/ratings.csv dans notation via COPY (full refresh idempotent)."""
     logger = get_run_logger()
     df = pd.read_csv(SILVER_DIR / "ratings.csv")
 
     buffer = io.StringIO()
-    df[["user_id", "film_id", "note", "timestamp"]].to_csv(buffer, index=False, header=False, sep="\t")
+    df[["user_id", "film_id", "note", "timestamp"]].to_csv(
+        buffer, index=False, header=False, sep="\t"
+    )
     buffer.seek(0)
 
     conn = _connect()
@@ -134,7 +153,8 @@ def load_notations() -> int:
         with conn.cursor() as cur:
             cur.execute("TRUNCATE TABLE notation CASCADE")
             cur.copy_expert(
-                "COPY notation (user_id, film_id, note, timestamp) FROM STDIN WITH (FORMAT csv, DELIMITER E'\\t')",
+                "COPY notation (user_id, film_id, note, timestamp) FROM STDIN "
+                "WITH (FORMAT csv, DELIMITER E'\\t')",
                 buffer,
             )
         conn.commit()
@@ -147,7 +167,10 @@ def load_notations() -> int:
 
 @task
 def load_avis() -> int:
-    """Charge silver/avis.csv (avis TMDB rattachés aux utilisateurs) dans la table avis via COPY (full refresh idempotent)."""
+    """Charge silver/avis.csv dans la table avis via COPY (full refresh idempotent).
+
+    Avis TMDB déjà rattachés aux utilisateurs par clean_avis (transform_silver).
+    """
     logger = get_run_logger()
     avis_path = SILVER_DIR / "avis.csv"
     if not avis_path.exists():
@@ -157,7 +180,9 @@ def load_avis() -> int:
     df = pd.read_csv(avis_path)
 
     buffer = io.StringIO()
-    df[["user_id", "film_id", "texte", "timestamp"]].to_csv(buffer, index=False, header=False)
+    df[["user_id", "film_id", "texte", "timestamp"]].to_csv(
+        buffer, index=False, header=False
+    )
     buffer.seek(0)
 
     conn = _connect()
@@ -165,7 +190,8 @@ def load_avis() -> int:
         with conn.cursor() as cur:
             cur.execute("TRUNCATE TABLE avis CASCADE")
             cur.copy_expert(
-                "COPY avis (user_id, film_id, texte, timestamp) FROM STDIN WITH (FORMAT csv)",
+                "COPY avis (user_id, film_id, texte, timestamp) "
+                "FROM STDIN WITH (FORMAT csv)",
                 buffer,
             )
         conn.commit()
@@ -181,8 +207,9 @@ def build_gold_tables(utilisateurs: int, films: int, notations: int, avis: int) 
     """Log récapitulatif."""
     logger = get_run_logger()
     logger.info(
-        f"Gold peuplé : {utilisateurs} utilisateurs, {films} films, {notations} notations, {avis} avis. "
-        "sentiment_score/prediction_note restent vides (à peupler par Personne B, modèles ML/NLP)."
+        f"Gold peuplé : {utilisateurs} utilisateurs, {films} films, "
+        f"{notations} notations, {avis} avis. sentiment_score/prediction_note "
+        "restent vides (à peupler par Personne B, modèles ML/NLP)."
     )
 
 
