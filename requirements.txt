@@ -6,6 +6,7 @@ pydantic
 # Pipeline / orchestration
 prefect
 pandas
+psycopg2-binary
 
 # ML
 scikit-learn
