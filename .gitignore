@@ -19,6 +19,8 @@ data/gold/*
 # Modèles versionnés volumineux (garder .gitkeep)
 ml/models/*
 !ml/models/.gitkeep
+nlp/models/*
+!nlp/models/.gitkeep
 
 # Streamlit / IDE / OS
 .streamlit/
