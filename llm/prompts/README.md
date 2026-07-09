@@ -1,4 +1,4 @@
-# Prompts LLM (Claude)
+# Prompts LLM (Gemini)
 
 Templates de prompts versionnés pour les 3 fonctionnalités LLM :
 
@@ -6,4 +6,4 @@ Templates de prompts versionnés pour les 3 fonctionnalités LLM :
 - `comparaison.md` — comparaison de deux films
 - `recommandation.md` — recommandations justifiées (>= 5 suggestions)
 
-Modèle utilisé : `claude-sonnet-4-6`.
+Modèle utilisé : `gemini-2.5-flash` (Google Gemini, via `google-genai`).
