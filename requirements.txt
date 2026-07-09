@@ -7,6 +7,7 @@ pydantic
 prefect
 pandas
 psycopg2-binary
+pyarrow
 
 # ML
 scikit-learn

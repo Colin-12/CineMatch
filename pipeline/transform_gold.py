@@ -13,6 +13,7 @@ from psycopg2.extras import execute_values
 load_dotenv()
 
 SILVER_DIR = Path(__file__).resolve().parent.parent / "data" / "silver"
+GOLD_DIR = Path(__file__).resolve().parent.parent / "data" / "gold"
 
 DDL = """
 CREATE TABLE IF NOT EXISTS film (
@@ -94,6 +95,8 @@ def load_utilisateurs() -> int:
     logger = get_run_logger()
     df = pd.read_csv(SILVER_DIR / "users.csv")
     df = df.astype(object).where(df.notna(), None)
+    GOLD_DIR.mkdir(parents=True, exist_ok=True)
+    df[["user_id", "age"]].to_parquet(GOLD_DIR / "utilisateur.parquet", index=False)
     rows = list(df[["user_id", "age"]].itertuples(index=False, name=None))
 
     conn = _connect()
@@ -142,6 +145,8 @@ def load_films() -> int:
     df["genres"] = df["genres"].apply(
         lambda g: g.split("|") if isinstance(g, str) else []
     )
+    GOLD_DIR.mkdir(parents=True, exist_ok=True)
+    df[FILM_COLUMNS].to_parquet(GOLD_DIR / "film.parquet", index=False)
     rows = list(df[FILM_COLUMNS].itertuples(index=False, name=None))
 
     conn = _connect()
@@ -167,6 +172,11 @@ def load_notations() -> int:
     """Charge silver/ratings.csv dans notation via COPY (full refresh idempotent)."""
     logger = get_run_logger()
     df = pd.read_csv(SILVER_DIR / "ratings.csv")
+
+    GOLD_DIR.mkdir(parents=True, exist_ok=True)
+    df[["user_id", "film_id", "note", "timestamp"]].to_parquet(
+        GOLD_DIR / "notation.parquet", index=False
+    )
 
     buffer = io.StringIO()
     df[["user_id", "film_id", "note", "timestamp"]].to_csv(
@@ -205,6 +215,11 @@ def load_avis() -> int:
 
     df = pd.read_csv(avis_path)
 
+    GOLD_DIR.mkdir(parents=True, exist_ok=True)
+    df[["user_id", "film_id", "texte", "timestamp"]].to_parquet(
+        GOLD_DIR / "avis.parquet", index=False
+    )
+
     buffer = io.StringIO()
     df[["user_id", "film_id", "texte", "timestamp"]].to_csv(
         buffer, index=False, header=False
@@ -234,8 +249,9 @@ def build_gold_tables(utilisateurs: int, films: int, notations: int, avis: int) 
     logger = get_run_logger()
     logger.info(
         f"Gold peuplé : {utilisateurs} utilisateurs, {films} films, "
-        f"{notations} notations, {avis} avis. sentiment_score/prediction_note "
-        "restent vides (à peupler par Personne B, modèles ML/NLP)."
+        f"{notations} notations, {avis} avis (Supabase + snapshot Parquet "
+        f"dans {GOLD_DIR}). sentiment_score/prediction_note restent vides "
+        "(à peupler par Personne B, modèles ML/NLP)."
     )
 
 
