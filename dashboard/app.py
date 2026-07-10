@@ -1,4 +1,4 @@
-"""Dashboard Streamlit CineMatch (fiche, comparaison, recommandation, prédiction)."""
+"""Dashboard Streamlit CineMatch : fiche, comparaison, recommandation, ML/NLP."""
 
 import os
 
@@ -170,6 +170,60 @@ def page_recommandation() -> None:
                 st.write(suggestion["justification"])
 
 
+def page_prediction() -> None:
+    st.title("CineMatch — Prédiction de note")
+    st.caption(
+        "Note prédite (échelle MovieLens 1-5) via LightGBM, features "
+        "recalculées en direct sur les données Gold."
+    )
+
+    col1, col2 = st.columns(2)
+    user_id = col1.number_input("ID utilisateur", min_value=1, step=1, value=1)
+    film_id = col2.number_input("ID film", min_value=1, step=1, value=1)
+
+    if st.button("Prédire", type="primary"):
+        with st.spinner("Prédiction en cours..."):
+            data = _call_api(
+                "/prediction", {"user_id": int(user_id), "film_id": int(film_id)}
+            )
+
+        if data is None:
+            return
+
+        note = data["note_predite"]
+        st.metric("Note prédite", f"{note:.2f} / 5")
+        st.progress(min(max(note / 5, 0.0), 1.0))
+
+
+def page_sentiment() -> None:
+    st.title("CineMatch — Sentiment")
+    st.caption(
+        "Score de sentiment agrégé des avis TMDB d'un film (TF-IDF + "
+        "régression logistique, entraîné sur note_auteur)."
+    )
+
+    film_id = st.number_input("ID film", min_value=1, step=1, value=1)
+
+    if st.button("Analyser", type="primary"):
+        with st.spinner("Analyse en cours..."):
+            data = _call_api(f"/sentiment/{int(film_id)}", {})
+
+        if data is None:
+            return
+
+        label_display = {
+            "positif": ("🟢 Positif", "normal"),
+            "neutre": ("🟠 Neutre", "off"),
+            "negatif": ("🔴 Négatif", "inverse"),
+        }
+        label_text, _ = label_display.get(data["label"], (data["label"], "off"))
+
+        col1, col2 = st.columns(2)
+        col1.metric("Sentiment agrégé", label_text)
+        col2.metric("Score", f"{data['score']:.2f} / 1.00")
+        st.progress(min(max(data["score"], 0.0), 1.0))
+
+
 page = st.sidebar.radio("Navigation", PAGES)
 
 if page == "Fiche":
@@ -178,6 +232,10 @@ elif page == "Comparaison":
     page_comparaison()
 elif page == "Recommandation":
     page_recommandation()
+elif page == "Prédiction de note":
+    page_prediction()
+elif page == "Sentiment":
+    page_sentiment()
 else:
     st.title(f"CineMatch — {page}")
-    st.info("Vue en construction (dépend des modèles ML/NLP de Personne B).")
+    st.info("Vue en construction.")
