@@ -246,14 +246,19 @@ def page_sentiment() -> None:
         "régression logistique, entraîné sur note_auteur)."
     )
 
-    film_id = st.number_input("ID film", min_value=1, step=1, value=1)
+    titre = st.text_input("Titre du film", placeholder="ex. Toy Story")
 
-    if st.button("Analyser", type="primary"):
+    if st.button("Analyser", type="primary") and titre:
         with st.spinner("Analyse en cours..."):
-            data = _call_api(f"/sentiment/{int(film_id)}", {})
+            film = _call_api("/film", {"titre": titre})
+            if film is None:
+                return
+            data = _call_api(f"/sentiment/{film['film_id']}", {})
 
         if data is None:
             return
+
+        st.caption(f"Film analysé : {film['titre']} ({film.get('annee', 'N/A')})")
 
         label_display = {
             "positif": ("🟢 Positif", "normal"),
