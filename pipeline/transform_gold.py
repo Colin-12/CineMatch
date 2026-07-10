@@ -45,6 +45,12 @@ CREATE TABLE IF NOT EXISTS notation (
     PRIMARY KEY (user_id, film_id)
 );
 
+-- La PK (user_id, film_id) ne sert efficacement que les requêtes filtrées
+-- sur user_id (colonne de tête) ; /prediction agrège aussi par film_id
+-- seul (voir api/routers/prediction.py::fetch_notation_aggregate), d'où
+-- cet index dédié (sans lui : scan complet des ~1M lignes, ~3s/requête).
+CREATE INDEX IF NOT EXISTS idx_notation_film_id ON notation (film_id);
+
 CREATE TABLE IF NOT EXISTS avis (
     user_id INTEGER NOT NULL REFERENCES utilisateur(user_id),
     film_id INTEGER NOT NULL REFERENCES film(film_id),
