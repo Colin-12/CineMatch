@@ -223,17 +223,21 @@ def page_prediction() -> None:
 
     col1, col2 = st.columns(2)
     user_id = col1.number_input("ID utilisateur", min_value=1, step=1, value=1)
-    film_id = col2.number_input("ID film", min_value=1, step=1, value=1)
+    titre = col2.text_input("Titre du film", placeholder="ex. Toy Story")
 
-    if st.button("Prédire", type="primary"):
+    if st.button("Prédire", type="primary") and titre:
         with st.spinner("Prédiction en cours..."):
+            film = _call_api("/film", {"titre": titre})
+            if film is None:
+                return
             data = _call_api(
-                "/prediction", {"user_id": int(user_id), "film_id": int(film_id)}
+                "/prediction", {"user_id": int(user_id), "film_id": film["film_id"]}
             )
 
         if data is None:
             return
 
+        st.caption(f"Film analysé : {film['titre']} ({film.get('annee', 'N/A')})")
         note = data["note_predite"]
         st.metric("Note prédite", f"{note:.2f} / 5")
         st.progress(min(max(note / 5, 0.0), 1.0))
