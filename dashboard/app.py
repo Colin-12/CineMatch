@@ -1,6 +1,7 @@
 """Dashboard Streamlit CineMatch : fiche, comparaison, recommandation, ML/NLP."""
 
 import os
+from datetime import datetime, timezone
 
 import requests
 import streamlit as st
@@ -10,6 +11,49 @@ load_dotenv()
 
 API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000")
 REQUEST_TIMEOUT = 15
+GITHUB_REPO = "Colin-12/CineMatch"
+
+# Métriques modèles vs seuils Milestone 3 (statique, cf. model cards
+# ml/model_cards/lightgbm_rating_v1.0_20260709.md et
+# nlp/model_cards/tfidf_logreg_sentiment_v1.1_20260709.md du 2026-07-09).
+# À remettre à jour manuellement si Colin réentraîne/republie un modèle.
+MODEL_METRICS = [
+    {
+        "endpoint": "/prediction (LightGBM)",
+        "metrique": "RMSE",
+        "valeur": "0.9028",
+        "seuil": "< 1.0",
+        "ok": True,
+    },
+    {
+        "endpoint": "/prediction (LightGBM)",
+        "metrique": "Amélioration vs baseline (moy. globale)",
+        "valeur": "+19.1%",
+        "seuil": "≥ 10%",
+        "ok": True,
+    },
+    {
+        "endpoint": "/prediction (LightGBM)",
+        "metrique": "Amélioration vs baseline (moy. par film)",
+        "valeur": "+7.7%",
+        "seuil": "≥ 10%",
+        "ok": False,
+    },
+    {
+        "endpoint": "/sentiment (TF-IDF+LogReg)",
+        "metrique": "Accuracy",
+        "valeur": "0.774",
+        "seuil": "> 0.72",
+        "ok": True,
+    },
+    {
+        "endpoint": "/sentiment (TF-IDF+LogReg)",
+        "metrique": "F1 macro",
+        "valeur": "0.665",
+        "seuil": "> 0.70",
+        "ok": False,
+    },
+]
 
 st.set_page_config(page_title="CineMatch", layout="wide")
 
@@ -224,6 +268,85 @@ def page_sentiment() -> None:
         st.progress(min(max(data["score"], 0.0), 1.0))
 
 
+def _fetch_ci_status() -> dict | None:
+    """Statut du dernier run CI GitHub Actions sur main (API publique, sans auth)."""
+    try:
+        response = requests.get(
+            f"https://api.github.com/repos/{GITHUB_REPO}/commits/main/check-runs",
+            timeout=REQUEST_TIMEOUT,
+        )
+        response.raise_for_status()
+        return response.json()
+    except Exception:
+        return None
+
+
+def _format_timestamp(ts: int | None) -> str:
+    if not ts:
+        return "N/A"
+    return datetime.fromtimestamp(ts, tz=timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+
+
+def page_admin() -> None:
+    st.title("CineMatch — Admin")
+
+    st.subheader("📊 Chiffres clés Gold")
+    stats = _call_api("/admin/stats", {})
+    if stats is not None:
+        counts = stats["counts"]
+        cols = st.columns(4)
+        cols[0].metric("Films", f"{counts['film']:,}")
+        cols[1].metric("Utilisateurs", f"{counts['utilisateur']:,}")
+        cols[2].metric("Notations", f"{counts['notation']:,}")
+        cols[3].metric("Avis", f"{counts['avis']:,}")
+
+        coverage = stats["coverage"]
+        cols = st.columns(3)
+        cols[0].metric("Films enrichis TMDB", f"{coverage['films_enrichis_tmdb_pct']}%")
+        cols[1].metric(
+            "Avis avec note auteur", f"{coverage['avis_avec_note_auteur_pct']}%"
+        )
+        cols[2].metric("Films avec avis", f"{coverage['films_avec_avis_pct']}%")
+
+    st.divider()
+    st.subheader("🩺 Santé pipeline & CI")
+    col1, col2 = st.columns(2)
+
+    with col1:
+        st.markdown("**Fraîcheur des données**")
+        if stats is not None:
+            fraicheur = stats["fraicheur"]
+            derniere_notation = _format_timestamp(
+                fraicheur["derniere_notation_timestamp"]
+            )
+            dernier_avis = _format_timestamp(fraicheur["dernier_avis_timestamp"])
+            st.write(f"Dernière notation : {derniere_notation}")
+            st.write(f"Dernier avis : {dernier_avis}")
+
+    with col2:
+        st.markdown("**CI GitHub Actions (main)**")
+        checks = _fetch_ci_status()
+        if checks is None:
+            st.caption("Statut CI indisponible.")
+        else:
+            for run in checks.get("check_runs", []):
+                icon = "✅" if run.get("conclusion") == "success" else "❌"
+                st.write(f"{icon} {run['name']} — {run.get('conclusion')}")
+
+    st.divider()
+    st.subheader("🎯 Métriques modèles vs seuils Milestone 3")
+    st.caption(
+        "Valeurs statiques issues des model cards (2026-07-09) — à mettre à "
+        "jour manuellement en cas de réentraînement."
+    )
+    for row in MODEL_METRICS:
+        icon = "✅" if row["ok"] else "❌"
+        st.write(
+            f"{icon} **{row['endpoint']}** — {row['metrique']} : "
+            f"{row['valeur']} (seuil {row['seuil']})"
+        )
+
+
 page = st.sidebar.radio("Navigation", PAGES)
 
 if page == "Fiche":
@@ -236,6 +359,8 @@ elif page == "Prédiction de note":
     page_prediction()
 elif page == "Sentiment":
     page_sentiment()
+elif page == "Admin":
+    page_admin()
 else:
     st.title(f"CineMatch — {page}")
     st.info("Vue en construction.")
